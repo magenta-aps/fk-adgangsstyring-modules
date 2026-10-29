@@ -1,3 +1,3 @@
 # Hvad er FK Adgangstyring?
 
-![alt text](image.png)
+![alt text](docs-images/image.png)
