@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 Magenta ApS <info@magenta.dk>
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Builds and tests oiosaml3-keycloak-mappers on every change to it. Pushing a
+# tag oiosaml3-mappers-v<version> also publishes the JAR as a GitHub release
+# asset, downloadable at
+#   https://github.com/<owner>/<repo>/releases/download/oiosaml3-mappers-v<version>/oiosaml3-mappers.jar
+# The tag's version must equal <version> in pom.xml.
+
+name: oiosaml3-mappers
+
+on:
+  push:
+    branches: [main]
+    # Path filters are not evaluated for tag pushes, so tags always run.
+    tags: ['oiosaml3-mappers-v*']
+    paths:
+      - 'oiosaml3-keycloak-mappers/**'
+      - '.github/workflows/oiosaml3-mappers.yml'
+  pull_request:
+    paths:
+      - 'oiosaml3-keycloak-mappers/**'
+      - '.github/workflows/oiosaml3-mappers.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: oiosaml3-keycloak-mappers
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same JDK as build.sh's container; the bytecode targets 17 either way.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: oiosaml3-keycloak-mappers/pom.xml
+
+      - name: Check the tag matches the pom version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          pom_version="$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          tag_version="${GITHUB_REF_NAME#oiosaml3-mappers-v}"
+          if [ "$pom_version" != "$tag_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pom.xml version $pom_version"
+            exit 1
+          fi
+
+      - name: Build and test
+        run: mvn -B package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oiosaml3-mappers
+          path: oiosaml3-keycloak-mappers/target/oiosaml3-mappers.jar
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/oiosaml3-mappers-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: oiosaml3-mappers
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" oiosaml3-mappers.jar \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "OIOSAML3 Keycloak mappers ${GITHUB_REF_NAME#oiosaml3-mappers-v}" \
+            --notes "Keycloak provider JAR. Copy it into /opt/keycloak/providers/ and run kc.sh build. See oiosaml3-keycloak-mappers/README.md."

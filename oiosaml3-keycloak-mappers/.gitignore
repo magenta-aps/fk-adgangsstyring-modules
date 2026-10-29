@@ -1,0 +1,3 @@
+# Build output. Releases are built and published by
+# .github/workflows/oiosaml3-mappers.yml at the repo root.
+target/

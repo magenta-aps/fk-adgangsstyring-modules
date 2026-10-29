@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Magenta ApS <info@magenta.dk>
+SPDX-License-Identifier: AGPL-3.0-only
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>dk.magenta.openstream</groupId>
+  <artifactId>oiosaml3-mappers</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <name>OIOSAML3 Keycloak mappers for KOMBIT Context Handler</name>
+  <description>
+    Keycloak SAML mappers for KOMBIT's Context Handler. A protocol mapper for
+    an authority (myndighed) IdP realm emits the job function roles on the
+    user's groups as an OIO-BPP PrivilegeList in privilegesIntermediate. On the
+    service side, identity-provider mappers key the user on CVR and Serial from
+    the NameID DN and map the OIO-BPP 1.2 privileges to Keycloak roles.
+  </description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>17</maven.compiler.release>
+    <!--
+      Must match the Keycloak version the server runs; the protocol mapper SPI
+      is not stable across majors. magentaaps/openstream-keycloak:0.2.5 ships
+      Keycloak 26.2.5. Override with ./build.sh -Dkeycloak.version=...
+    -->
+    <keycloak.version>26.2.5</keycloak.version>
+    <junit.version>5.10.2</junit.version>
+  </properties>
+
+  <dependencies>
+    <!--
+      All Keycloak artifacts are `provided`: they are already on the server's
+      classpath, and bundling them would give this provider its own copy of
+      the model classes. Any third-party dependency added later would have to
+      be shaded in.
+    -->
+    <dependency>
+      <groupId>org.keycloak</groupId>
+      <artifactId>keycloak-core</artifactId>
+      <version>${keycloak.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.keycloak</groupId>
+      <artifactId>keycloak-server-spi</artifactId>
+      <version>${keycloak.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.keycloak</groupId>
+      <artifactId>keycloak-server-spi-private</artifactId>
+      <version>${keycloak.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- AbstractSAMLProtocolMapper, AttributeStatementHelper. -->
+    <dependency>
+      <groupId>org.keycloak</groupId>
+      <artifactId>keycloak-services</artifactId>
+      <version>${keycloak.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- org.keycloak.dom.saml.v2.assertion.* — the assertion model. -->
+    <dependency>
+      <groupId>org.keycloak</groupId>
+      <artifactId>keycloak-saml-core-public</artifactId>
+      <version>${keycloak.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.keycloak</groupId>
+      <artifactId>keycloak-saml-core</artifactId>
+      <version>${keycloak.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- Keep the file name stable: build.sh and the README refer to it. -->
+    <finalName>${project.artifactId}</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <!-- jboss-logmanager is on the test classpath; without this it
+               complains that JUL was initialised before it. -->
+          <argLine>-Djava.util.logging.manager=org.jboss.logmanager.LogManager</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

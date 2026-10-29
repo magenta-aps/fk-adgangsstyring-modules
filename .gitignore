@@ -1,0 +1,32 @@
+# Key material. scripts/split-p12.sh writes unencrypted .key files, and the
+# READMEs suggest putting them under secrets/.
+secrets/
+*.p12
+*.pfx
+*.key
+*.pem
+.env
+.env.*
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Maven
+target/
+
+# Editors and OS
+.idea/
+*.iml
+.vscode/
+*.swp
+.DS_Store

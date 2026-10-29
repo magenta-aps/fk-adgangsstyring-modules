@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and fill in. All values here are placeholders.
+
+keycloak_url           = "https://keycloak.example.dk"
+keycloak_client_id     = "terraform"
+keycloak_client_secret = "CHANGE-ME"
+
+# The .key and .crt from scripts/split-p12.sh.
+sp_private_key = <<-EOT
+  -----BEGIN PRIVATE KEY-----
+  CHANGE-ME
+  -----END PRIVATE KEY-----
+EOT
+
+sp_certificate = <<-EOT
+  -----BEGIN CERTIFICATE-----
+  CHANGE-ME
+  -----END CERTIFICATE-----
+EOT
