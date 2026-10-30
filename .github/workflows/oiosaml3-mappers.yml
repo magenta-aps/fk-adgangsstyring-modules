@@ -11,7 +11,7 @@ name: oiosaml3-mappers
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     # Path filters are not evaluated for tag pushes, so tags always run.
     tags: ['oiosaml3-mappers-v*']
     paths:
