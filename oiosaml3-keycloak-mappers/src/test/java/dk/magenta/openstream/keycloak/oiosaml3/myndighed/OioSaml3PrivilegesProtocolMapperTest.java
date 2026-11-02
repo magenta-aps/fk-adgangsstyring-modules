@@ -184,7 +184,11 @@ class OioSaml3PrivilegesProtocolMapperTest {
         String xml = decodedXml(run(defaults(), session("hans", a, b)));
 
         assertEquals(Set.of(CVR + " -> " + ROLE_A, CVR + " -> " + ROLE_B), pairs(xml));
-        assertEquals(1, xml.split("<PrivilegeGroup ", -1).length - 1, "one scope, one group");
+        assertEquals(2, xml.split("<PrivilegeGroup ", -1).length - 1, "one group per role");
+        assertEquals(
+                0,
+                xml.split("</Privilege><Privilege>", -1).length - 1,
+                "never two privileges in one group");
     }
 
     @Test

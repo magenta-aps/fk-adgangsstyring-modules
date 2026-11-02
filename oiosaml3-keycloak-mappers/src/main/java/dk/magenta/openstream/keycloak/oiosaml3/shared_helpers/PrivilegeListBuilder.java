@@ -4,9 +4,7 @@ package dk.magenta.openstream.keycloak.oiosaml3.shared_helpers;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -15,8 +13,11 @@ import java.util.regex.Pattern;
  * {@code PrivilegeList} and base64-encodes it, ready to be used as the value of
  * the privilege attribute in an assertion sent to Context Handler.
  *
- * <p>Follows OIO-BPP 1.2 "Model 2": privileges with the same scope are
- * collected in one {@code PrivilegeGroup}. Only {@code PrivilegeList} is in the
+ * <p>Writes one {@code PrivilegeGroup} per privilege, as KOMBIT requires
+ * ("1 PrivilegeGroup = 1 jobfunktionsrolle", Vejledning til Opsætning af
+ * Identity Provider). OIO-BPP 1.2 itself allows several privileges per group,
+ * but Context Handler rejects that with "Duplicate privilege has been found on
+ * privilege group element". Only {@code PrivilegeList} is in the
  * bpp namespace; the schema leaves the local elements unqualified, so
  * {@code PrivilegeGroup} and {@code Privilege} carry no namespace.
  *
@@ -38,7 +39,10 @@ public final class PrivilegeListBuilder {
     private static final Pattern CVR = Pattern.compile("\\d{8}");
 
     private final String namespace;
-    private final Map<String, Set<String>> privilegesByScope = new LinkedHashMap<>();
+    /** Distinct (scope, privilege) pairs, in insertion order. */
+    private final Set<Entry> entries = new LinkedHashSet<>();
+
+    private record Entry(String scope, String privilege) {}
 
     public PrivilegeListBuilder(String namespace) {
         this.namespace = namespace;
@@ -57,14 +61,12 @@ public final class PrivilegeListBuilder {
         if (trimmedUri.isEmpty()) {
             throw new IllegalArgumentException("Privilege URI must not be empty");
         }
-        privilegesByScope
-                .computeIfAbsent(CVR_SCOPE_PREFIX + trimmedCvr, k -> new LinkedHashSet<>())
-                .add(trimmedUri);
+        entries.add(new Entry(CVR_SCOPE_PREFIX + trimmedCvr, trimmedUri));
         return this;
     }
 
     public boolean isEmpty() {
-        return privilegesByScope.isEmpty();
+        return entries.isEmpty();
     }
 
     /** The PrivilegeList as an XML string. */
@@ -73,11 +75,9 @@ public final class PrivilegeListBuilder {
         xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
         xml.append("<bpp:PrivilegeList xmlns:bpp=\"").append(escape(namespace)).append("\"");
         xml.append(" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
-        for (Map.Entry<String, Set<String>> group : privilegesByScope.entrySet()) {
-            xml.append("<PrivilegeGroup Scope=\"").append(escape(group.getKey())).append("\">");
-            for (String privilege : group.getValue()) {
-                xml.append("<Privilege>").append(escape(privilege)).append("</Privilege>");
-            }
+        for (Entry entry : entries) {
+            xml.append("<PrivilegeGroup Scope=\"").append(escape(entry.scope())).append("\">");
+            xml.append("<Privilege>").append(escape(entry.privilege())).append("</Privilege>");
             xml.append("</PrivilegeGroup>");
         }
         xml.append("</bpp:PrivilegeList>");

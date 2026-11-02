@@ -59,6 +59,8 @@ in the assertion and shown indented here; the real value has no whitespace:
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <PrivilegeGroup Scope="urn:dk:gov:saml:cvrNumberIdentifier:29189846">
     <Privilege>http://kombit.dk/roles/jobrole/sagsbehandler/1</Privilege>
+  </PrivilegeGroup>
+  <PrivilegeGroup Scope="urn:dk:gov:saml:cvrNumberIdentifier:29189846">
     <Privilege>http://kombit.dk/roles/jobrole/leder/1</Privilege>
   </PrivilegeGroup>
   <PrivilegeGroup Scope="urn:dk:gov:saml:cvrNumberIdentifier:12345678">
@@ -66,6 +68,12 @@ in the assertion and shown indented here; the real value has no whitespace:
   </PrivilegeGroup>
 </bpp:PrivilegeList>
 ```
+
+Each role gets its own `PrivilegeGroup`, even when several roles share a
+scope. KOMBIT requires this ("1 PrivilegeGroup = 1 jobfunktionsrolle" in
+*Vejledning til Opsætning af Identity Provider*). OIO-BPP 1.2 itself allows
+several privileges per group, but Context Handler rejects such a list with
+"Duplicate privilege has been found on privilege group element".
 
 ## Files
 
@@ -110,7 +118,8 @@ src/test/java/dk/magenta/openstream/keycloak/oiosaml3/
     user's other roles or fail the login.
 - **`PrivilegeListBuilder`** handles the OIO-BPP format. It has no Keycloak
   dependency, so it can be unit tested directly.
-  - It groups privileges by scope and drops duplicates.
+  - It writes one `PrivilegeGroup` per role, as KOMBIT requires, and drops
+    a role that appears twice with the same scope.
   - It writes compact XML: only `PrivilegeList` is in the `bpp` namespace,
     and there is no whitespace between elements.
   - It escapes values, then base64-encodes the UTF-8 bytes.
@@ -169,7 +178,7 @@ Copy the JAR into Keycloak's `providers/` directory and rebuild or restart:
   ```dockerfile
   FROM quay.io/keycloak/keycloak:26.2.5 AS builder
   # ADD from a URL creates the file with mode 600; Keycloak doesn't run as root.
-  ADD --chmod=644 https://github.com/<owner>/fk-adgangsstyring/releases/download/oiosaml3-mappers-v1.0.0/oiosaml3-mappers.jar \
+  ADD --chmod=644 https://github.com/<owner>/fk-adgangsstyring/releases/download/oiosaml3-mappers-v1.0.1/oiosaml3-mappers.jar \
       /opt/keycloak/providers/
   RUN /opt/keycloak/bin/kc.sh build
 
@@ -398,8 +407,8 @@ user.
 `./build.sh` runs them. They need no running Keycloak:
 
 - **`PrivilegeListBuilderTest`** checks the exact XML output and that it is
-  namespace-correct (via the JDK's DOM parser). It also covers scope
-  grouping and duplicates, trimming, escaping, CVR/URI validation, the legacy
+  namespace-correct (via the JDK's DOM parser). It also covers one group
+  per role and duplicates, trimming, escaping, CVR/URI validation, the legacy
   namespace, and the UTF-8/base64 round trip.
 - **`OioSaml3PrivilegesProtocolMapperTest`** runs `transformAttributeStatement`
   against stubbed users and groups. It covers config validation,

@@ -55,7 +55,8 @@ class PrivilegeListBuilderTest {
     }
 
     @Test
-    void groupsPrivilegesByScopeInInsertionOrder() {
+    void writesOneGroupPerPrivilegeInInsertionOrder() {
+        // KOMBIT: "1 PrivilegeGroup = 1 jobfunktionsrolle", even for the same scope.
         String xml =
                 new PrivilegeListBuilder(DIGST)
                         .add("29189846", ROLE_A)
@@ -67,9 +68,11 @@ class PrivilegeListBuilderTest {
                 PROLOG + OPEN
                         + "<PrivilegeGroup Scope=\"" + SCOPE + "29189846\">"
                         + "<Privilege>" + ROLE_A + "</Privilege>"
-                        + "<Privilege>" + ROLE_B + "</Privilege>"
                         + "</PrivilegeGroup>"
                         + "<PrivilegeGroup Scope=\"" + SCOPE + "12345678\">"
+                        + "<Privilege>" + ROLE_B + "</Privilege>"
+                        + "</PrivilegeGroup>"
+                        + "<PrivilegeGroup Scope=\"" + SCOPE + "29189846\">"
                         + "<Privilege>" + ROLE_B + "</Privilege>"
                         + "</PrivilegeGroup>"
                         + CLOSE,
@@ -86,6 +89,18 @@ class PrivilegeListBuilderTest {
                         .toXml();
 
         assertEquals(1, xml.split("<Privilege>", -1).length - 1);
+        assertEquals(1, xml.split("<PrivilegeGroup ", -1).length - 1);
+    }
+
+    @Test
+    void keepsTheSamePrivilegeForDifferentScopes() {
+        String xml =
+                new PrivilegeListBuilder(DIGST)
+                        .add("29189846", ROLE_A)
+                        .add("12345678", ROLE_A)
+                        .toXml();
+
+        assertEquals(2, xml.split("<PrivilegeGroup ", -1).length - 1);
     }
 
     @Test
