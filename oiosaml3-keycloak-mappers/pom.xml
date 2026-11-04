@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
   <groupId>dk.magenta.openstream</groupId>
   <artifactId>oiosaml3-mappers</artifactId>
-  <version>1.1.0</version>
+  <version>1.2.0</version>
   <packaging>jar</packaging>
 
   <name>OIOSAML3 Keycloak mappers for KOMBIT Context Handler</name>

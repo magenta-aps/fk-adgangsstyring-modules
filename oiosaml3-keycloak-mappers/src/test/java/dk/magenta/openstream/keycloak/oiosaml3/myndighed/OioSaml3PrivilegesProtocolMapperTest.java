@@ -424,4 +424,94 @@ class OioSaml3PrivilegesProtocolMapperTest {
 
         assertTrue(xml.contains(privilegeGroup(OTHER_CVR, ROLE_C, constraint(KLE, "25.*"))), xml);
     }
+
+    // --- constraints on subgroups ------------------------------------------
+
+    private static final String SITE_USER = "http://magenta.dk/roles/jobrole/owp-test-site-user/1";
+    private static final String SITE_ADMIN = "http://magenta.dk/roles/jobrole/owp-test-site-admin/1";
+    private static final String SITE_USER_PARAM = "http://magenta.dk/owp-site-user/1/parametric";
+    private static final String SITE_ADMIN_PARAM = "http://magenta.dk/owp-site-admin/1/parametric";
+
+    @Test
+    void aSubgroupSuppliesTheConstraintForItsParentsRole() {
+        Group siteUser = group("OWP site user").attr(ROLE_ATTR, SITE_USER);
+        Group site = siteUser.child("magenta-test-2").attr(CONSTRAINT_ATTR, SITE_USER_PARAM + "=magenta-test-2");
+
+        String xml = decodedXml(run(defaults(), session("hans", site)));
+
+        assertEquals(
+                privilegeGroup(CVR, SITE_USER, constraint(SITE_USER_PARAM, "magenta-test-2")),
+                xml.substring(xml.indexOf("<PrivilegeGroup"), xml.indexOf("</bpp:PrivilegeList>")));
+    }
+
+    @Test
+    void severalSubgroupsOfTheSameRoleGiveTheUnionOfTheirValues() {
+        Group siteUser = group("OWP site user").attr(ROLE_ATTR, SITE_USER);
+        Group a = siteUser.child("magenta-test-2").attr(CONSTRAINT_ATTR, SITE_USER_PARAM + "=magenta-test-2");
+        Group b = siteUser.child("magenta-test-3").attr(CONSTRAINT_ATTR, SITE_USER_PARAM + "=magenta-test-3");
+
+        String xml = decodedXml(run(defaults(), session("hans", a, b)));
+
+        assertEquals(
+                privilegeGroup(CVR, SITE_USER, constraint(SITE_USER_PARAM, "magenta-test-2,magenta-test-3")),
+                xml.substring(xml.indexOf("<PrivilegeGroup"), xml.indexOf("</bpp:PrivilegeList>")));
+    }
+
+    @Test
+    void separateRoleTreesKeepTheirValuesApart() {
+        Group siteUser = group("OWP site user").attr(ROLE_ATTR, SITE_USER);
+        Group siteAdmin = group("OWP site admin").attr(ROLE_ATTR, SITE_ADMIN);
+        Group userSite = siteUser.child("magenta-test-2").attr(CONSTRAINT_ATTR, SITE_USER_PARAM + "=magenta-test-2");
+        Group adminSite = siteAdmin.child("magenta-test-3").attr(CONSTRAINT_ATTR, SITE_ADMIN_PARAM + "=magenta-test-3");
+
+        String xml = decodedXml(run(defaults(), session("hans", userSite, adminSite)));
+
+        assertTrue(xml.contains(privilegeGroup(CVR, SITE_USER, constraint(SITE_USER_PARAM, "magenta-test-2"))), xml);
+        assertTrue(xml.contains(privilegeGroup(CVR, SITE_ADMIN, constraint(SITE_ADMIN_PARAM, "magenta-test-3"))), xml);
+    }
+
+    @Test
+    void constraintsReachEveryAncestorAndAddUpOnTheWay() {
+        Group top = group("top").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + "=10.*");
+        Group middle = top.child("middle").attr(ROLE_ATTR, ROLE_B).attr(CONSTRAINT_ATTR, KLE + "=20.*");
+        Group leaf = middle.child("leaf").attr(CONSTRAINT_ATTR, KLE + "=30.*", ORG + "=x");
+
+        String xml = decodedXml(run(defaults(), session("hans", leaf)));
+
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_B,
+                constraint(KLE, "30.*,20.*") + constraint(ORG, "x"))), xml);
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A,
+                constraint(KLE, "30.*,20.*,10.*") + constraint(ORG, "x"))), xml);
+    }
+
+    @Test
+    void directMembershipOfTheParentToo() {
+        Group siteUser = group("OWP site user").attr(ROLE_ATTR, SITE_USER);
+        Group site = siteUser.child("magenta-test-2").attr(CONSTRAINT_ATTR, SITE_USER_PARAM + "=magenta-test-2");
+
+        String xml = decodedXml(run(defaults(), session("hans", siteUser, site)));
+
+        assertEquals(1, xml.split("<PrivilegeGroup ", -1).length - 1, xml);
+        assertTrue(xml.contains(privilegeGroup(CVR, SITE_USER, constraint(SITE_USER_PARAM, "magenta-test-2"))), xml);
+    }
+
+    @Test
+    void subgroupConstraintsNeedParentGroupsIncluded() {
+        Map<String, String> config = defaults();
+        config.put(OioSaml3PrivilegesProtocolMapper.CONF_INCLUDE_PARENTS, "false");
+        Group siteUser = group("OWP site user").attr(ROLE_ATTR, SITE_USER);
+        Group site = siteUser.child("magenta-test-2").attr(CONSTRAINT_ATTR, SITE_USER_PARAM + "=magenta-test-2");
+
+        assertTrue(run(config, session("hans", site)).getAttributes().isEmpty());
+    }
+
+    @Test
+    void aSubgroupConstraintUsesTheParentsDelegatedScope() {
+        Group delegated = group("delegated").attr(ROLE_ATTR, ROLE_C).attr(SCOPE_ATTR, OTHER_CVR);
+        Group site = delegated.child("site").attr(CONSTRAINT_ATTR, KLE + "=25.*");
+
+        String xml = decodedXml(run(defaults(), session("hans", site)));
+
+        assertTrue(xml.contains(privilegeGroup(OTHER_CVR, ROLE_C, constraint(KLE, "25.*"))), xml);
+    }
 }

@@ -113,9 +113,14 @@ The rules:
 - **Values are comma-separated lists.** Values are split on `,`, trimmed and
   de-duplicated. This is the format KOMBIT's examples (`15*,17*,28*,32*`) and
   OS2rollekatalog use.
-- **A group's constraints apply to every role on that group**, not to roles
-  on its parent or child groups. Parameter URIs belong to one job function
-  role, so a group that carries constraints should normally carry one role.
+- **A group's constraints apply to every role on that group and on its
+  parent groups**, but never to roles on its subgroups. So the role can sit
+  on a parent group and the values on its subgroups (see
+  [Values on subgroups](#values-on-subgroups)). This needs *Include Parent
+  Groups* on. Parameter URIs belong to one job function role, so a group
+  whose constraints reach a role should not reach other roles: keep one role
+  per group, and one role per chain of parent groups above a value
+  subgroup.
 - **The same role through several groups gets the union** of the groups'
   values for each parameter. A user in both *Jobcenter* (KLE `25.*`) and
   *Ydelser* (KLE `27.*`) with the same role gets `25.*,27.*`.
@@ -131,6 +136,27 @@ The rules:
 - OS2rollekatalog never sends dynamic constraints on delegated roles. The
   mapper doesn't block it, but don't count on Context Handler honouring
   them.
+- **Context Handler rejects the login if a dynamic constraint has no
+  value**, with *"Login kan ikke gennemføres, fordi der mangler en
+  obligatorisk dataafgrænsningsværdi med ID'et ' - <parameter URI> '"*. It
+  fails the whole login, not just that role.
+
+### Values on subgroups
+
+To give users the same role with different values without repeating the
+role, put the role on a parent group and one value per subgroup:
+
+```
+OWP site user          oiosaml.jobrole    = http://magenta.dk/roles/jobrole/owp-test-site-user/1
+ ├─ magenta-test-2     oiosaml.constraint = http://magenta.dk/owp-site-user/1/parametric=magenta-test-2
+ └─ magenta-test-3     oiosaml.constraint = http://magenta.dk/owp-site-user/1/parametric=magenta-test-3
+```
+
+Adding a user to `magenta-test-2` grants the parent's role with that value.
+A user in both subgroups gets `magenta-test-2,magenta-test-3`. A user in
+only the parent group gets the role with no value, which Context Handler
+rejects, so assign users to the subgroups. Before 1.2.0 the subgroup's
+constraint was ignored.
 
 [`docs/dataafgraensning-model.md`](docs/dataafgraensning-model.md) describes
 the setup this enables: one job function role per user system role, every
@@ -244,7 +270,7 @@ Copy the JAR into Keycloak's `providers/` directory and rebuild or restart:
   ```dockerfile
   FROM quay.io/keycloak/keycloak:26.2.5 AS builder
   # ADD from a URL creates the file with mode 600; Keycloak doesn't run as root.
-  ADD --chmod=644 https://github.com/<owner>/fk-adgangsstyring/releases/download/oiosaml3-mappers-v1.1.0/oiosaml3-mappers.jar \
+  ADD --chmod=644 https://github.com/<owner>/fk-adgangsstyring/releases/download/oiosaml3-mappers-v1.2.0/oiosaml3-mappers.jar \
       /opt/keycloak/providers/
   RUN /opt/keycloak/bin/kc.sh build
 
@@ -301,7 +327,8 @@ registered as a SAML client from its metadata.
 | `oiosaml.scope_cvr` | *Optional.* CVR of the delegating authority, for roles delegated by another authority. |
 | `oiosaml.constraint` | *Optional.* `<parameter URI>=<value>` for a dynamic constraint. Add the key again for more. See [Data constraints](#data-constraints-dataafgrænsninger). |
 
-Groups can be nested; a user in a subgroup also gets the parent's roles. For
+Groups can be nested; a user in a subgroup also gets the parent's roles,
+with the subgroup's constraints. For
 users synced from AD/LDAP, the *group-ldap-mapper* can import AD groups as
 Keycloak groups, and you then set the attributes on the imported groups.
 
@@ -492,7 +519,9 @@ user.
   delegation, parent groups (on, off, shared ancestors), custom attribute
   names, the legacy namespace, skipping a bad group without losing the rest,
   and leaving the attribute out when there are no roles. For constraints it
-  covers which roles a group's constraints reach, union across groups,
+  covers which roles a group's constraints reach, values on subgroups
+  (union, separate role trees, several levels, the parent also joined,
+  parent groups off, delegation), union across groups,
   malformed entries, a custom attribute name, turning them off, and
   delegated roles.
 - **`PrivilegeListTest`** parses a value Context Handler actually sent, the

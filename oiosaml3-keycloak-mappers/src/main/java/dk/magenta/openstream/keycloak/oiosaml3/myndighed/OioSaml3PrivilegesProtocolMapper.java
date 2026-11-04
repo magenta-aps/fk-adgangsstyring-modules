@@ -5,8 +5,10 @@ package dk.magenta.openstream.keycloak.oiosaml3.myndighed;
 import dk.magenta.openstream.keycloak.oiosaml3.shared_helpers.PrivilegeList.Constraint;
 import dk.magenta.openstream.keycloak.oiosaml3.shared_helpers.PrivilegeListBuilder;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
 import org.keycloak.dom.saml.v2.assertion.AttributeStatementType;
@@ -47,9 +49,13 @@ import org.keycloak.provider.ProviderConfigurationBuilder;
  * (dataafgrænsninger) of its roles in {@code oiosaml.constraint}, as
  * {@code <parameter URI>=<value>}, keyed by the parameter URI registered for
  * the constraint in Administrationsmodulet. The attribute is multi-valued, and
- * every constraint of a group applies to every role on that group. Values are
- * comma-separated lists; the same role reached through several groups gets
- * the union of their values.
+ * every constraint of a group applies to every role on that group and, when
+ * parent groups are included, to the roles it inherits from its ancestors.
+ * That lets a parent group carry the role and its subgroups the values:
+ * joining subgroup {@code magenta-test-2} of {@code OWP site user} grants the
+ * parent's role with that site. Constraints never flow down to subgroups.
+ * Values are comma-separated lists; the same role reached through several
+ * groups gets the union of their values.
  *
  * <p>Per OIO-BPP, the attribute is omitted entirely when the user has no
  * privileges, rather than sent as an empty list.
@@ -224,24 +230,39 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
         String constraintAttribute = config(mappingModel, CONF_GROUP_CONSTRAINT_ATTRIBUTE);
 
         PrivilegeListBuilder builder = new PrivilegeListBuilder(namespace(mappingModel));
+        Map<String, List<Constraint>> constraintsByGroup = new HashMap<>();
+        Set<String> warned = new HashSet<>();
 
-        for (GroupModel group : groupsOf(user, includeParents)) {
-            List<String> roleUris = group.getAttributeStream(roleAttribute).toList();
-            if (roleUris.isEmpty()) {
-                continue;
-            }
-            String delegated = scopeAttribute == null ? null : group.getFirstAttribute(scopeAttribute);
-            String cvr = delegated != null && !delegated.isBlank() ? delegated.trim() : defaultCvr;
-            List<Constraint> constraints = constraintsOf(group, constraintAttribute);
-            for (String uri : roleUris) {
-                try {
-                    builder.add(cvr, uri, constraints);
-                } catch (IllegalArgumentException e) {
-                    // One misconfigured group must not take the user's other
-                    // roles with it, nor fail the whole login.
-                    LOG.warnf(
-                            "Skipping role '%s' on group %s for user %s: %s",
-                            uri, group.getName(), user.getUsername(), e.getMessage());
+        // Walk up from each group the user is a direct member of. The
+        // constraints seen so far on the way up apply to the roles found
+        // higher up, so a subgroup can supply the values for its parent's role.
+        for (GroupModel member : user.getGroupsStream().toList()) {
+            List<Constraint> inherited = new ArrayList<>();
+            Set<String> visited = new HashSet<>();
+            for (GroupModel group = member; group != null && visited.add(group.getId());
+                    group = includeParents ? group.getParent() : null) {
+                GroupModel current = group;
+                inherited.addAll(constraintsByGroup.computeIfAbsent(
+                        current.getId(), id -> constraintsOf(current, constraintAttribute)));
+
+                List<String> roleUris = current.getAttributeStream(roleAttribute).toList();
+                if (roleUris.isEmpty()) {
+                    continue;
+                }
+                String delegated = scopeAttribute == null ? null : current.getFirstAttribute(scopeAttribute);
+                String cvr = delegated != null && !delegated.isBlank() ? delegated.trim() : defaultCvr;
+                for (String uri : roleUris) {
+                    try {
+                        builder.add(cvr, uri, inherited);
+                    } catch (IllegalArgumentException e) {
+                        // One misconfigured group must not take the user's other
+                        // roles with it, nor fail the whole login.
+                        if (warned.add(current.getId() + " " + uri)) {
+                            LOG.warnf(
+                                    "Skipping role '%s' on group %s for user %s: %s",
+                                    uri, current.getName(), user.getUsername(), e.getMessage());
+                        }
+                    }
                 }
             }
         }
@@ -297,20 +318,6 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
             return null;
         }
         return new Constraint(name, entry.substring(separator + 1).trim());
-    }
-
-    /** The user's groups, optionally with all their ancestors, without duplicates. */
-    private static List<GroupModel> groupsOf(UserModel user, boolean includeParents) {
-        Set<String> seen = new LinkedHashSet<>();
-        List<GroupModel> result = new ArrayList<>();
-        user.getGroupsStream().forEach(group -> {
-            GroupModel current = group;
-            while (current != null && seen.add(current.getId())) {
-                result.add(current);
-                current = includeParents ? current.getParent() : null;
-            }
-        });
-        return result;
     }
 
     private static String namespace(ProtocolMapperModel model) {

@@ -125,16 +125,32 @@ an `oiosaml.constraint` entry.
 
 ### Different values for different users
 
-When users need the same role with different values, make one group per set
-of values:
+When users need the same role with different values, put the role on a
+parent group and each value on a subgroup, and add users to the subgroups:
 
-| Group | `oiosaml.jobrole` | `oiosaml.constraint` |
-| --- | --- | --- |
-| SAPA se sag – Jobcenter | `…/sapa-se-sag/1` | `…/sapa-se-sag/kle/1/parametric=25.*` |
-| SAPA se sag – Ydelser | `…/sapa-se-sag/1` | `…/sapa-se-sag/kle/1/parametric=27.*` |
+```
+OWP site user          oiosaml.jobrole    = http://magenta.dk/roles/jobrole/owp-test-site-user/1
+ ├─ magenta-test-2     oiosaml.constraint = http://magenta.dk/owp-site-user/1/parametric=magenta-test-2
+ └─ magenta-test-3     oiosaml.constraint = http://magenta.dk/owp-site-user/1/parametric=magenta-test-3
+OWP site admin         oiosaml.jobrole    = http://magenta.dk/roles/jobrole/owp-test-site-admin/1
+ └─ magenta-test-2     oiosaml.constraint = http://magenta.dk/owp-site-admin/1/parametric=magenta-test-2
+```
 
-A user in both groups gets the role once, with the union of the values:
-`25.*,27.*`. Values are only ever added this way, never narrowed.
+Joining a subgroup grants the parent's role with the subgroup's value, so
+access is effectively given per user, per role, per value, without user
+attributes. A user in both `magenta-test-2` and `magenta-test-3` under *OWP
+site user* gets the role once, with `magenta-test-2,magenta-test-3`. Values
+are only ever added this way, never narrowed. Roles that use the same kind
+of value (`site_user`, `site_admin`) stay apart because each has its own
+tree and parameter URI.
+
+Keep a single role on each parent group: a subgroup's constraints apply to
+every role above it. A user placed directly in the parent group gets the
+role without a value, which Context Handler rejects. *Include Parent
+Groups* must be on (the default).
+
+Role and value on the same group (one group per role and value) works too,
+and is the only option before version 1.2.0.
 
 If a value is the same for every user of the role, it can be made static in
 Administrationsmodulet instead and left out of Keycloak.
@@ -147,9 +163,11 @@ Administrationsmodulet instead and left out of Keycloak.
   with the API above is worth it.
 - **Missing values.** If a group leaves out a dynamic constraint, or its
   entry is malformed, the mapper sends the role without that `Constraint`
-  (malformed entries log a warning). KOMBIT doesn't document what Context
-  Handler does then; it may drop the role or reject the login. **Test this
-  in ExtTest** before relying on it.
+  (malformed entries log a warning). Context Handler then **rejects the
+  whole login** (confirmed in ExtTest): *"Login kan ikke gennemføres, fordi
+  der mangler en obligatorisk dataafgrænsningsværdi med ID'et ' -
+  <parameter URI> '"*. One badly configured group locks the user out of all
+  their roles.
 - **Exact strings.** A parameter URI that differs by one character from
   Administrationsmodulet is silently ignored by Context Handler. Copy them,
   don't type them.
@@ -176,13 +194,16 @@ Administrationsmodulet instead and left out of Keycloak.
   `GET /api/user/{username}/roles?system=KOMBIT`. Choose it when the
   authority wants a full role-management tool rather than Keycloak groups.
 
-## To confirm in ExtTest
+## Confirmed in ExtTest
 
-- What Context Handler does with a dynamic constraint the token has no value
-  for.
-- That the parameter URI is entered in the value field when *Dynamisk* is
-  ticked in Administrationsmodulet. The user guide only says the value is
-  fetched from the IdP.
+- The parameter URI is entered in the value field when *Dynamisk* is ticked
+  in Administrationsmodulet, and the IdP sends it as the `Constraint` `Name`
+  in the job function role's `PrivilegeGroup`.
+- Context Handler rejects the login when a dynamic constraint has no value
+  (see above).
+
+## Still to confirm
+
 - That Context Handler accepts one job function role per system role at
   scale (no limit on roles per user or token size).
 
