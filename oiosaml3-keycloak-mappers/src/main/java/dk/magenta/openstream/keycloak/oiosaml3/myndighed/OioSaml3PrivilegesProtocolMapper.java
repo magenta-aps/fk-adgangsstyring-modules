@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 package dk.magenta.openstream.keycloak.oiosaml3.myndighed;
 
-import dk.magenta.openstream.keycloak.oiosaml3.shared_helpers.PrivilegeList;
+import dk.magenta.openstream.keycloak.oiosaml3.shared_helpers.PrivilegeList.Constraint;
 import dk.magenta.openstream.keycloak.oiosaml3.shared_helpers.PrivilegeListBuilder;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -43,6 +43,14 @@ import org.keycloak.provider.ProviderConfigurationBuilder;
  * <p>Scope is the authority's CVR from the mapper config. A group can override
  * it with {@code oiosaml.scope_cvr} for a role delegated by another authority.
  *
+ * <p>A group can also carry values for the dynamic data constraints
+ * (dataafgrænsninger) of its roles in {@code oiosaml.constraint}, as
+ * {@code <parameter URI>=<value>}, keyed by the parameter URI registered for
+ * the constraint in Administrationsmodulet. The attribute is multi-valued, and
+ * every constraint of a group applies to every role on that group. Values are
+ * comma-separated lists; the same role reached through several groups gets
+ * the union of their values.
+ *
  * <p>Per OIO-BPP, the attribute is omitted entirely when the user has no
  * privileges, rather than sent as an empty list.
  */
@@ -58,6 +66,7 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
     static final String CONF_GROUP_ATTRIBUTE = "group.jobrole.attribute";
     static final String CONF_GROUP_SCOPE_ATTRIBUTE = "group.scope.attribute";
     static final String CONF_INCLUDE_PARENTS = "include.parent.groups";
+    static final String CONF_GROUP_CONSTRAINT_ATTRIBUTE = "group.constraint.attribute";
 
     static final String NAMESPACE_OPTION_DIGST = "OIO-BPP 1.2 (digst.dk)";
     static final String NAMESPACE_OPTION_ITST = "Legacy (itst.dk)";
@@ -66,6 +75,7 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
             "https://data.gov.dk/model/core/eid/privilegesIntermediate";
     static final String DEFAULT_GROUP_ATTRIBUTE = "oiosaml.jobrole";
     static final String DEFAULT_GROUP_SCOPE_ATTRIBUTE = "oiosaml.scope_cvr";
+    static final String DEFAULT_GROUP_CONSTRAINT_ATTRIBUTE = "oiosaml.constraint";
 
     @Override
     public String getId() {
@@ -85,8 +95,9 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
     @Override
     public String getHelpText() {
         return "Builds an OIO-BPP PrivilegeList from the job function role URIs on the user's"
-            + " groups, base64-encodes it, and adds it as the privilegesIntermediate attribute."
-            + " Omitted when the user has no roles.";
+            + " groups, with the values of their dynamic data constraints, base64-encodes it,"
+            + " and adds it as the privilegesIntermediate attribute. Omitted when the user has"
+            + " no roles.";
     }
 
     @Override
@@ -165,6 +176,17 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
                 .type(ProviderConfigProperty.BOOLEAN_TYPE)
                 .defaultValue("true")
                 .add()
+                .property()
+                .name(CONF_GROUP_CONSTRAINT_ATTRIBUTE)
+                .label("Group Attribute With Constraint Value")
+                .helpText(
+                        "Optional group attribute holding <parameter URI>=<value> for a dynamic"
+                            + " data constraint of the group's roles. The parameter URI is the one"
+                            + " registered for the constraint in Administrationsmodulet. Multiple"
+                            + " values allowed. Clearing it turns constraints off.")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .defaultValue(DEFAULT_GROUP_CONSTRAINT_ATTRIBUTE)
+                .add()
                 .build();
     }
 
@@ -199,6 +221,7 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
         String roleAttribute = configOr(mappingModel, CONF_GROUP_ATTRIBUTE, DEFAULT_GROUP_ATTRIBUTE);
         String scopeAttribute = config(mappingModel, CONF_GROUP_SCOPE_ATTRIBUTE);
         boolean includeParents = !"false".equalsIgnoreCase(config(mappingModel, CONF_INCLUDE_PARENTS));
+        String constraintAttribute = config(mappingModel, CONF_GROUP_CONSTRAINT_ATTRIBUTE);
 
         PrivilegeListBuilder builder = new PrivilegeListBuilder(namespace(mappingModel));
 
@@ -209,9 +232,10 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
             }
             String delegated = scopeAttribute == null ? null : group.getFirstAttribute(scopeAttribute);
             String cvr = delegated != null && !delegated.isBlank() ? delegated.trim() : defaultCvr;
+            List<Constraint> constraints = constraintsOf(group, constraintAttribute);
             for (String uri : roleUris) {
                 try {
-                    builder.add(cvr, uri);
+                    builder.add(cvr, uri, constraints);
                 } catch (IllegalArgumentException e) {
                     // One misconfigured group must not take the user's other
                     // roles with it, nor fail the whole login.
@@ -230,6 +254,49 @@ public class OioSaml3PrivilegesProtocolMapper extends AbstractSAMLProtocolMapper
 
         LOG.debugf("PrivilegeList for user %s: %s", user.getUsername(), builder.toXml());
         AttributeStatementHelper.addAttribute(attributeStatement, mappingModel, builder.toBase64());
+    }
+
+    /**
+     * The constraints a group puts on its roles, from {@code <parameter URI>=<value>}
+     * entries in {@code constraintAttribute}. A malformed entry, or one without
+     * a value, is logged and left out; the roles are still sent.
+     */
+    private static List<Constraint> constraintsOf(GroupModel group, String constraintAttribute) {
+        List<Constraint> result = new ArrayList<>();
+        if (constraintAttribute == null) {
+            return result;
+        }
+        group.getAttributeStream(constraintAttribute).forEach(entry -> {
+            Constraint parsed = parseEntry(entry, group, constraintAttribute);
+            if (parsed == null) {
+                return;
+            }
+            if (PrivilegeListBuilder.splitValues(parsed.value()).isEmpty()) {
+                LOG.warnf(
+                        "Skipping constraint '%s' on group %s: no value after '='",
+                        parsed.name(), group.getName());
+                return;
+            }
+            result.add(parsed);
+        });
+        return result;
+    }
+
+    /**
+     * Splits {@code <parameter URI>=<value>} at the first {@code =}, trimming
+     * both parts. Returns {@code null}, after logging, when there is no
+     * {@code =} or the URI is blank. The value may be empty.
+     */
+    private static Constraint parseEntry(String entry, GroupModel group, String attribute) {
+        int separator = entry == null ? -1 : entry.indexOf('=');
+        String name = separator < 0 ? "" : entry.substring(0, separator).trim();
+        if (name.isEmpty()) {
+            LOG.warnf(
+                    "Skipping '%s' in attribute %s on group %s: expected <parameter URI>=<value>",
+                    entry, attribute, group.getName());
+            return null;
+        }
+        return new Constraint(name, entry.substring(separator + 1).trim());
     }
 
     /** The user's groups, optionally with all their ancestors, without duplicates. */

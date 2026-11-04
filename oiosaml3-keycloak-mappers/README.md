@@ -7,8 +7,9 @@ identity-provider mappers for a supplier's (leverandør's) service realm (see
 
 On the IdP side, when Keycloak issues an assertion to Context Handler, the
 **OIOSAML3 Job Function Roles to PrivilegeList** protocol mapper adds the
-user's job function roles (jobfunktionsroller) as an OIO Basic Privilege
-Profile (OIO-BPP) `PrivilegeList`. The list goes in the
+user's job function roles (jobfunktionsroller), with the values of their
+dynamic data constraints, as an OIO Basic Privilege Profile (OIO-BPP)
+`PrivilegeList`. The list goes in the
 `privilegesIntermediate` attribute. The NameID DN Context Handler requires
 is sent with Keycloak's built-in mapper (see
 [4. Send the NameID as a DN](#4-send-the-nameid-as-a-dn)).
@@ -75,10 +76,71 @@ scope. KOMBIT requires this ("1 PrivilegeGroup = 1 jobfunktionsrolle" in
 several privileges per group, but Context Handler rejects such a list with
 "Duplicate privilege has been found on privilege group element".
 
+## Data constraints (dataafgrænsninger)
+
+When a user system role is attached to a job function role in
+Administrationsmodulet, each of its constraint types is set either to a
+fixed value or to **Dynamisk**. A dynamic constraint's value in
+Administrationsmodulet is not a value but a **parameter URI** chosen by the
+authority, for example `http://kommune.dk/KLE-SEK/1/parametric`. The IdP
+supplies the actual value at login as a `Constraint` with that parameter as
+its `Name`, in the job function role's `PrivilegeGroup`. Context Handler puts
+the value on the user system role that refers to the parameter. Each user
+system role can have its own parameter, so one job function role can carry
+different values for different system roles.
+
+The values are set on the group, next to the role, in the
+**`oiosaml.constraint`** attribute as `<parameter URI>=<value>`. The
+attribute is multi-valued: add the key again for each parameter. A group in
+Keycloak:
+
+| Key | Value |
+| --- | --- |
+| `oiosaml.jobrole` | `http://kommune.dk/roles/jobrole/se-sag/1` |
+| `oiosaml.constraint` | `http://kommune.dk/se-sag/kle/1/parametric=25.*,27.10.*` |
+
+Every member of the group gets:
+
+```xml
+<PrivilegeGroup Scope="urn:dk:gov:saml:cvrNumberIdentifier:29189846">
+  <Privilege>http://kommune.dk/roles/jobrole/se-sag/1</Privilege>
+  <Constraint Name="http://kommune.dk/se-sag/kle/1/parametric">25.*,27.10.*</Constraint>
+</PrivilegeGroup>
+```
+
+The rules:
+
+- **Values are comma-separated lists.** Values are split on `,`, trimmed and
+  de-duplicated. This is the format KOMBIT's examples (`15*,17*,28*,32*`) and
+  OS2rollekatalog use.
+- **A group's constraints apply to every role on that group**, not to roles
+  on its parent or child groups. Parameter URIs belong to one job function
+  role, so a group that carries constraints should normally carry one role.
+- **The same role through several groups gets the union** of the groups'
+  values for each parameter. A user in both *Jobcenter* (KLE `25.*`) and
+  *Ydelser* (KLE `27.*`) with the same role gets `25.*,27.*`.
+- **A malformed entry is left out; the role is still sent.** That is an
+  entry without `=`, with a blank URI, or with nothing after the `=`. Each
+  case logs a `WARN` line. KOMBIT doesn't document what Context Handler does with a
+  dynamic constraint it receives no value for, so treat these warnings as
+  errors to fix.
+- **The entry is split at the first `=`.** The parameter URI must not
+  contain `=`; the value may.
+- Fixed values that are the same for everyone belong in
+  Administrationsmodulet as non-dynamic values, not in Keycloak.
+- OS2rollekatalog never sends dynamic constraints on delegated roles. The
+  mapper doesn't block it, but don't count on Context Handler honouring
+  them.
+
+[`docs/dataafgraensning-model.md`](docs/dataafgraensning-model.md) describes
+the setup this enables: one job function role per user system role, every
+constraint dynamic, and all assignment done in Keycloak.
+
 ## Files
 
 ```
 pom.xml                                   Maven build; Keycloak version lives here
+docs/dataafgraensning-model.md            One job function role per system role, managed in Keycloak
 build.sh                                  Builds the JAR (runs the tests first)
 src/main/java/dk/magenta/openstream/keycloak/oiosaml3/
   myndighed/                              IdP side: the authority's realm, sending to Context Handler
@@ -88,7 +150,7 @@ src/main/java/dk/magenta/openstream/keycloak/oiosaml3/
     OioSaml3DnMapper.java                 DN component to name / attribute
     SamlAssertions.java, Config.java      Assertion and mapper-config access
   shared_helpers/                         Not mappers: format helpers both sides use
-    PrivilegeListBuilder.java             Builds and encodes the PrivilegeList XML
+    PrivilegeListBuilder.java             Builds and encodes the PrivilegeList XML, constraints included
     PrivilegeList.java                    Parses the PrivilegeList XML
     DistinguishedName.java                Parses the NameID DN
 src/main/resources/META-INF/services/
@@ -112,14 +174,18 @@ src/test/java/dk/magenta/openstream/keycloak/oiosaml3/
   - It defines the settings shown in the admin console and rejects a config
     without a valid 8-digit CVR.
   - On each login it collects the user's groups (and their parents), reads
-    the role and delegation attributes, and adds the encoded list to the
-    assertion.
+    the role, delegation and constraint attributes, and adds the encoded
+    list to the assertion.
   - A misconfigured group is logged and skipped, so it can't remove the
-    user's other roles or fail the login.
+    user's other roles or fail the login. A malformed constraint entry is
+    logged and left out; its role is still sent.
 - **`PrivilegeListBuilder`** handles the OIO-BPP format. It has no Keycloak
   dependency, so it can be unit tested directly.
-  - It writes one `PrivilegeGroup` per role, as KOMBIT requires, and drops
-    a role that appears twice with the same scope.
+  - It writes one `PrivilegeGroup` per role, as KOMBIT requires. A role
+    that appears twice with the same scope is written once, with the union
+    of both sets of constraint values.
+  - It writes the `Constraint` elements after the `Privilege`, the order the
+    OIO-BPP schema requires.
   - It writes compact XML: only `PrivilegeList` is in the `bpp` namespace,
     and there is no whitespace between elements.
   - It escapes values, then base64-encodes the UTF-8 bytes.
@@ -178,7 +244,7 @@ Copy the JAR into Keycloak's `providers/` directory and rebuild or restart:
   ```dockerfile
   FROM quay.io/keycloak/keycloak:26.2.5 AS builder
   # ADD from a URL creates the file with mode 600; Keycloak doesn't run as root.
-  ADD --chmod=644 https://github.com/<owner>/fk-adgangsstyring/releases/download/oiosaml3-mappers-v1.0.1/oiosaml3-mappers.jar \
+  ADD --chmod=644 https://github.com/<owner>/fk-adgangsstyring/releases/download/oiosaml3-mappers-v1.1.0/oiosaml3-mappers.jar \
       /opt/keycloak/providers/
   RUN /opt/keycloak/bin/kc.sh build
 
@@ -233,6 +299,7 @@ registered as a SAML client from its metadata.
 | --- | --- |
 | `oiosaml.jobrole` | The EntityId from Administrationsmodulet, e.g. `http://kombit.dk/roles/jobrole/sagsbehandler/1`. Add the key again for more roles. |
 | `oiosaml.scope_cvr` | *Optional.* CVR of the delegating authority, for roles delegated by another authority. |
+| `oiosaml.constraint` | *Optional.* `<parameter URI>=<value>` for a dynamic constraint. Add the key again for more. See [Data constraints](#data-constraints-dataafgrænsninger). |
 
 Groups can be nested; a user in a subgroup also gets the parent's roles. For
 users synced from AD/LDAP, the *group-ldap-mapper* can import AD groups as
@@ -260,6 +327,7 @@ instead.
 | Group Attribute With Role URI | `oiosaml.jobrole` | Clearing it falls back to the default |
 | Group Attribute With Delegating CVR | `oiosaml.scope_cvr` | Clearing it **turns delegation off** |
 | Include Parent Groups | on | Off: only the groups the user is a direct member of |
+| Group Attribute With Constraint Value | `oiosaml.constraint` | Clearing it **turns constraints off** |
 
 Keycloak refuses to save the mapper unless the Authority CVR is a valid
 8-digit number.
@@ -317,6 +385,12 @@ must match the Authority CVR of the privileges mapper.
 - **A role is missing:** look for a `WARN Skipping role …` line in the
   Keycloak log. It means that group's `oiosaml.scope_cvr` isn't 8 digits or
   the role value is blank. The user's other roles are still sent.
+- **A constraint is missing:** look for `WARN Skipping constraint …` or
+  `WARN Skipping '…' in attribute …`. The group's `oiosaml.constraint` entry
+  has no `=`, a blank parameter URI, or nothing after the `=`.
+- **Context Handler ignores a constraint value:** the `Name` must equal the
+  parameter URI in Administrationsmodulet character for character, and the
+  constraint must be marked *Dynamisk* on that user system role.
 - **Username sent instead of the DN:** either the user has no
   `x509SubjectName`, or the NameID mapper wasn't called because the
   response's NameID format doesn't match the mapper's (see step 4).
@@ -409,13 +483,18 @@ user.
 - **`PrivilegeListBuilderTest`** checks the exact XML output and that it is
   namespace-correct (via the JDK's DOM parser). It also covers one group
   per role and duplicates, trimming, escaping, CVR/URI validation, the legacy
-  namespace, and the UTF-8/base64 round trip.
+  namespace, and the UTF-8/base64 round trip. For constraints it covers
+  order after the privilege, value-list normalisation, merging, empty
+  values, escaping, and parsing the output back with `PrivilegeList`.
 - **`OioSaml3PrivilegesProtocolMapperTest`** runs `transformAttributeStatement`
   against stubbed users and groups. It covers config validation,
   attribute name/format, multi-valued roles, de-duplication across groups,
   delegation, parent groups (on, off, shared ancestors), custom attribute
   names, the legacy namespace, skipping a bad group without losing the rest,
-  and leaving the attribute out when there are no roles.
+  and leaving the attribute out when there are no roles. For constraints it
+  covers which roles a group's constraints reach, union across groups,
+  malformed entries, a custom attribute name, turning them off, and
+  delegated roles.
 - **`PrivilegeListTest`** parses a value Context Handler actually sent, the
   profile's constraint example, the output of `PrivilegeListBuilder`, and
   rejects non-OIO-BPP roots and external entities.

@@ -40,6 +40,10 @@ class OioSaml3PrivilegesProtocolMapperTest {
     private static final String ROLE_B = "http://kombit.dk/roles/jobrole/leder/1";
     private static final String ROLE_C = "http://kombit.dk/roles/jobrole/delegeret/1";
 
+    private static final String CONSTRAINT_ATTR = OioSaml3PrivilegesProtocolMapper.DEFAULT_GROUP_CONSTRAINT_ATTRIBUTE;
+    private static final String KLE = "http://kommune.dk/KLE-SEK/1/parametric";
+    private static final String ORG = "http://kommune.dk/ORG/1/parametric";
+
     private final OioSaml3PrivilegesProtocolMapper mapper = new OioSaml3PrivilegesProtocolMapper();
 
     /** The config the admin console saves when only the CVR is filled in. */
@@ -308,5 +312,116 @@ class OioSaml3PrivilegesProtocolMapperTest {
         Group badCvr = group("bad-cvr").attr(ROLE_ATTR, ROLE_B).attr(SCOPE_ATTR, "1234");
 
         assertTrue(run(defaults(), session("hans", badCvr)).getAttributes().isEmpty());
+    }
+
+    // --- constraints --------------------------------------------------------
+
+    /** The single PrivilegeGroup of the emitted list, for exact checks. */
+    private static String privilegeGroup(String cvr, String role, String constraints) {
+        return "<PrivilegeGroup Scope=\"" + SCOPE + cvr + "\"><Privilege>" + role + "</Privilege>"
+                + constraints + "</PrivilegeGroup>";
+    }
+
+    private static String constraint(String name, String value) {
+        return "<Constraint Name=\"" + name + "\">" + value + "</Constraint>";
+    }
+
+    @Test
+    void sendsAFixedConstraintValueFromTheGroup() {
+        Group group = group("jobcenter").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + " = 25.*, 27.10.*");
+
+        String xml = decodedXml(run(defaults(), session("hans", group)));
+
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A, constraint(KLE, "25.*,27.10.*"))), xml);
+    }
+
+    @Test
+    void appliesEveryConstraintOfAGroupToEachOfItsRolesButNotToOtherGroups() {
+        Group constrained = group("c")
+                .attr(ROLE_ATTR, ROLE_A, ROLE_B)
+                .attr(CONSTRAINT_ATTR, KLE + "=25.*", ORG + "=abc");
+        Group plain = group("p").attr(ROLE_ATTR, ROLE_C);
+
+        String xml = decodedXml(run(defaults(), session("hans", constrained, plain)));
+
+        String both = constraint(KLE, "25.*") + constraint(ORG, "abc");
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A, both)), xml);
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_B, both)), xml);
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_C, "")), xml);
+    }
+
+    @Test
+    void unitesTheValuesOfARoleReachedThroughSeveralGroups() {
+        Group jobcenter = group("jobcenter").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + "=25.*");
+        Group ydelser = group("ydelser").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + "=27.*,25.*");
+
+        String xml = decodedXml(run(defaults(), session("hans", jobcenter, ydelser)));
+
+        assertEquals(privilegeGroup(CVR, ROLE_A, constraint(KLE, "25.*,27.*")),
+                xml.substring(xml.indexOf("<PrivilegeGroup"), xml.indexOf("</bpp:PrivilegeList>")));
+    }
+
+    @Test
+    void parentGroupConstraintsStayOnTheParentsRoles() {
+        Group parent = group("parent").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + "=25.*");
+        Group child = parent.child("child").attr(ROLE_ATTR, ROLE_B);
+
+        String xml = decodedXml(run(defaults(), session("hans", child)));
+
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A, constraint(KLE, "25.*"))), xml);
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_B, "")), xml);
+    }
+
+    @Test
+    void skipsMalformedConstraintEntriesButKeepsTheRest() {
+        Group group = group("g")
+                .attr(ROLE_ATTR, ROLE_A)
+                .attr(CONSTRAINT_ATTR, "no-separator", "=25.*", KLE + "=", ORG + "=abc");
+
+        String xml = decodedXml(run(defaults(), session("hans", group)));
+
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A, constraint(ORG, "abc"))), xml);
+    }
+
+    @Test
+    void splitsAConstraintEntryAtTheFirstEqualsSign() {
+        Group group = group("g").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + "=a=b");
+
+        String xml = decodedXml(run(defaults(), session("hans", group)));
+
+        assertTrue(xml.contains(constraint(KLE, "a=b")), xml);
+    }
+
+    @Test
+    void ignoresConstraintsWhenTheirAttributeIsNotConfigured() {
+        for (String cleared : new String[] {null, " "}) {
+            Map<String, String> config = defaults();
+            config.put(OioSaml3PrivilegesProtocolMapper.CONF_GROUP_CONSTRAINT_ATTRIBUTE, cleared);
+            Group group = group("g").attr(ROLE_ATTR, ROLE_A).attr(CONSTRAINT_ATTR, KLE + "=25.*");
+
+            String xml = decodedXml(run(config, session("hans", group)));
+
+            assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A, "")), xml);
+        }
+    }
+
+    @Test
+    void readsConstraintsFromCustomGroupAttributes() {
+        Map<String, String> config = defaults();
+        config.put(OioSaml3PrivilegesProtocolMapper.CONF_GROUP_CONSTRAINT_ATTRIBUTE, "kombit.kle");
+        Group group = group("g").attr(ROLE_ATTR, ROLE_A).attr("kombit.kle", KLE + "=25.*").attr(CONSTRAINT_ATTR, ORG + "=x");
+
+        String xml = decodedXml(run(config, session("hans", group)));
+
+        assertTrue(xml.contains(privilegeGroup(CVR, ROLE_A, constraint(KLE, "25.*"))), xml);
+    }
+
+    @Test
+    void sendsConstraintsOnADelegatedRoleUnderTheDelegatingScope() {
+        Group group = group("d").attr(ROLE_ATTR, ROLE_C).attr(SCOPE_ATTR, OTHER_CVR).attr(CONSTRAINT_ATTR, KLE + "=25.*");
+
+        String xml = decodedXml(run(defaults(), session("hans", group)));
+
+        assertTrue(xml.contains(privilegeGroup(OTHER_CVR, ROLE_C, constraint(KLE, "25.*"))), xml);
     }
 }

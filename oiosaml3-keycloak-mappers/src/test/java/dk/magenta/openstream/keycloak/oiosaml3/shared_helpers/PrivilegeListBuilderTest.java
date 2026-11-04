@@ -8,9 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dk.magenta.openstream.keycloak.oiosaml3.shared_helpers.PrivilegeList.Constraint;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
@@ -28,6 +30,8 @@ class PrivilegeListBuilderTest {
 
     private static final String ROLE_A = "http://kombit.dk/roles/jobrole/sagsbehandler/1";
     private static final String ROLE_B = "http://kombit.dk/roles/jobrole/leder/1";
+    private static final String KLE = "http://kommune.dk/KLE-SEK/1/parametric";
+    private static final String ORG = "http://kommune.dk/ORG/1/parametric";
 
     private static Document parse(String xml) throws Exception {
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -201,5 +205,137 @@ class PrivilegeListBuilderTest {
         assertFalse(PrivilegeListBuilder.isValidCvr("2918984"));
         assertFalse(PrivilegeListBuilder.isValidCvr(" 29189846"));
         assertFalse(PrivilegeListBuilder.isValidCvr("2918984x"));
+    }
+
+    // --- constraints --------------------------------------------------------
+
+    @Test
+    void writesConstraintsAfterThePrivilege() {
+        String xml = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint(KLE, "25.*,27.10.*"), new Constraint(ORG, "abc")))
+                .toXml();
+
+        assertEquals(
+                PROLOG + OPEN
+                        + "<PrivilegeGroup Scope=\"" + SCOPE + "29189846\">"
+                        + "<Privilege>" + ROLE_A + "</Privilege>"
+                        + "<Constraint Name=\"" + KLE + "\">25.*,27.10.*</Constraint>"
+                        + "<Constraint Name=\"" + ORG + "\">abc</Constraint>"
+                        + "</PrivilegeGroup>"
+                        + CLOSE,
+                xml);
+    }
+
+    @Test
+    void normalisesConstraintValueLists() {
+        String xml = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint(" " + KLE + " ", " 25.* , ,27.*,25.* ")))
+                .toXml();
+
+        assertTrue(xml.contains("<Constraint Name=\"" + KLE + "\">25.*,27.*</Constraint>"), xml);
+    }
+
+    @Test
+    void mergesConstraintsWhenTheSamePrivilegeIsAddedAgain() {
+        String xml = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint(KLE, "25.*")))
+                .add("29189846", ROLE_A)
+                .add("29189846", ROLE_A, List.of(new Constraint(KLE, "27.*,25.*"), new Constraint(ORG, "x")))
+                .toXml();
+
+        assertEquals(1, xml.split("<PrivilegeGroup ", -1).length - 1);
+        assertTrue(xml.contains("<Constraint Name=\"" + KLE + "\">25.*,27.*</Constraint>"), xml);
+        assertTrue(xml.contains("<Constraint Name=\"" + ORG + "\">x</Constraint>"), xml);
+    }
+
+    @Test
+    void keepsConstraintsOfDifferentScopesApart() {
+        String xml = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint(KLE, "25.*")))
+                .add("12345678", ROLE_A)
+                .toXml();
+
+        assertTrue(xml.endsWith(
+                "<PrivilegeGroup Scope=\"" + SCOPE + "12345678\">"
+                        + "<Privilege>" + ROLE_A + "</Privilege>"
+                        + "</PrivilegeGroup>"
+                        + CLOSE),
+                xml);
+    }
+
+    @Test
+    void dropsAConstraintWithoutValues() {
+        String xml = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint(KLE, " , "), new Constraint(ORG, null)))
+                .toXml();
+
+        assertFalse(xml.contains("<Constraint"), xml);
+        assertTrue(xml.contains("<Privilege>" + ROLE_A + "</Privilege>"));
+    }
+
+    @Test
+    void rejectsABlankConstraintNameWithoutAddingAnything() {
+        PrivilegeListBuilder builder = new PrivilegeListBuilder(DIGST);
+        for (String name : new String[] {null, "", "  "}) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> builder.add("29189846", ROLE_A, List.of(new Constraint(name, "25.*"))),
+                    "name " + name);
+        }
+        assertTrue(builder.isEmpty());
+    }
+
+    @Test
+    void escapesConstraintNamesAndValues() throws Exception {
+        String xml = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint("http://x/p?a=1&b=\"2\"", "<a>&b")))
+                .toXml();
+
+        Element constraint = (Element) parse(xml).getElementsByTagName("Constraint").item(0);
+        assertEquals("http://x/p?a=1&b=\"2\"", constraint.getAttribute("Name"));
+        assertEquals("<a>&b", constraint.getTextContent());
+        assertNull(constraint.getNamespaceURI());
+    }
+
+    @Test
+    void outputParsesBackWithItsConstraints() {
+        String base64 = new PrivilegeListBuilder(DIGST)
+                .add("29189846", ROLE_A, List.of(new Constraint(KLE, "25.*")))
+                .toBase64();
+
+        List<PrivilegeList.PrivilegeGroup> groups = PrivilegeList.parse(base64);
+
+        assertEquals(1, groups.size());
+        assertEquals(List.of(ROLE_A), groups.get(0).privileges());
+        assertEquals(List.of(new Constraint(KLE, "25.*")), groups.get(0).constraints());
+    }
+
+    @Test
+    void normalisedValuesStillMatchAListSyntaxRegex() throws Exception {
+        // A real constraint type: http://test.openworkplace.dk/constraints/site_uid/1,
+        // "Syntaksvalidering" with this regex in Administrationsmodulet.
+        java.util.regex.Pattern siteUid = java.util.regex.Pattern.compile("^[-a-z0-9]+(,[-a-z0-9]+)*$");
+        String name = "http://test.openworkplace.dk/constraints/site_uid/1/parametric";
+
+        String[][] cases = {
+            // value(s) added for the same role,  expected value sent
+            {"site-a", "site-a"},
+            {"site-a,site-b", "site-a,site-b"},
+            {" site-a , site-b ", "site-a,site-b"},
+            {",site-a,,site-b,", "site-a,site-b"},
+            {"site-a,site-a", "site-a"},
+            {"site-a|site-b,site-a|site-c", "site-a,site-b,site-c"},
+        };
+        for (String[] c : cases) {
+            PrivilegeListBuilder builder = new PrivilegeListBuilder(DIGST);
+            for (String value : c[0].split("\\|")) {
+                builder.add("29189846", ROLE_A, List.of(new Constraint(name, value)));
+            }
+            String sent = ((Element) parse(builder.toXml()).getElementsByTagName("Constraint").item(0))
+                    .getTextContent();
+
+            assertEquals(c[1], sent, "input " + c[0]);
+            assertTrue(siteUid.matcher(sent).matches(), "regex rejects '" + sent + "' from " + c[0]);
+        }
     }
 }
